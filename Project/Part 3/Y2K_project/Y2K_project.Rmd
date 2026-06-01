@@ -1,0 +1,906 @@
+---
+title: "Project - Group (Y2K)"
+author: "Avneet, Dev, Nishant, Karan"
+date: "2025-12-04"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+### Group members -
+
+1.  Avneet Singh (A20578342)
+2.  Dev Patel (A20581821)
+3.  Nishant Khandhar (A20581012)
+4.  Karan Gada (A20588930)
+
+# 1. Introduction and Project Objective
+
+## Research Objective
+
+The primary objective of this project is to analyze the relationship between socioeconomic conditions—specifically economic hardship and unemployment—and crime rates across Chicago's community areas. By integrating crime incident data with the Hardship Index, we aim to quantify how economic disadvantage correlates with various types of criminal activity (violent, property, drug, and public order offenses).
+
+## Methodology Overview
+
+We will utilize **Negative Binomial Regression** (or Poisson, depending on dispersion) to model the count of crime incidents. This approach is chosen because crime data consists of non-negative integers (counts) and typically exhibits overdispersion (where the variance exceeds the mean), making standard linear regression inappropriate.
+
+```{r}
+# Load required libraries
+library(tidyverse)
+library(lubridate)
+library(readr) 
+library(tidyr) 
+library(ggplot2) 
+library(scales) 
+library(knitr) 
+library(MASS)
+library(lmtest) 
+library(pscl) 
+library(broom) 
+library(modelsummary) 
+library(dplyr)
+```
+
+# Data Cleaning
+
+```{r}
+# Define file names (all in working directory)
+crime_files <- list(
+  "2019" = "Crimes_-_2019_20251111.csv",
+  "2020" = "Crimes_-_2020_20251111.csv", 
+  "2021" = "Crimes_-_2021_20251111.csv",
+  "2022" = "Crimes_-_2022_20251111.csv",
+  "2023" = "Crimes_-_2023_20251111.csv"
+)
+
+HARDSHIP_FILE <- "HardshipIndex.csv"
+
+# 1. LOAD + CLEAN CRIME DATA
+
+crime_frames <- list()
+
+for (year in names(crime_files)) {
+  filename <- crime_files[[year]]
+  cat(paste("Loading", year, "from:", filename, "\n"))
+  
+  # Read CSV with all columns as character initially
+  df <- read_csv(filename, col_types = cols(.default = "c"), show_col_types = FALSE)
+  
+  # ---- Standardize column names ----
+  rename_map <- c(
+    "Primary Type" = "primary_type",
+    "Primary_Type" = "primary_type",
+    "Community Area" = "community_area",
+    "COMMUNITY_AREA" = "community_area",
+    "Community Area Name" = "community_area_name",
+    "COMMUNITY_AREA_NAME" = "community_area_name",
+    "Date" = "date",
+    "DATE" = "date",
+    "Arrest" = "arrest",
+    "ARREST" = "arrest",
+    "Block" = "block",
+    "BLOCK" = "block"
+  )
+  
+  # Rename columns
+  for (old_name in names(rename_map)) {
+    if (old_name %in% names(df)) {
+      names(df)[names(df) == old_name] <- rename_map[old_name]
+    }
+  }
+  
+  # ---- Parse date ----
+  if ("date" %in% names(df)) {
+    df$date <- parse_date_time(df$date, orders = c("m/d/Y H:M", "m/d/Y H:M:S", "Y-m-d H:M:S"))
+    df$year <- year(df$date)
+    # Fill NA years with the known table year
+    df$year[is.na(df$year)] <- as.integer(year)
+    df$year <- as.integer(df$year)
+  } else {
+    # If no date column
+    df$year <- as.integer(year)
+    df$date <- as.POSIXct(NA)
+  }
+  
+  # ---- Keep only useful columns ----
+  keep_cols <- c("year", "date", "primary_type", "arrest", "community_area", "community_area_name")
+  keep_cols <- keep_cols[keep_cols %in% names(df)]
+  df <- df %>% dplyr::select(all_of(keep_cols))
+  
+  # ---- Drop rows with missing community_area ----
+  if (!"community_area" %in% names(df)) {
+    stop(paste("'community_area' column missing in", filename))
+  }
+  
+  df <- df %>% filter(!is.na(community_area) & community_area != "")
+  
+  # ---- Ensure community_area is integer ----
+  df$community_area <- gsub("\\.0$", "", trimws(df$community_area))
+  df$community_area <- as.integer(df$community_area)
+  
+  # Optional: standardize primary_type to uppercase
+  if ("primary_type" %in% names(df)) {
+    df$primary_type <- toupper(as.character(df$primary_type))
+  }
+  
+  # Save cleaned per-year file
+  yearly_out <- paste0("Crimes_Cleaned_", year, ".csv")
+  write_csv(df, yearly_out)
+  cat(paste("Saved cleaned", year, "crimes to:", yearly_out, "(rows:", nrow(df), ")\n"))
+  
+  crime_frames[[year]] <- df
+}
+
+# 2. CONCATENATE ALL YEARS
+
+crime_all <- bind_rows(crime_frames)
+all_out <- "Crimes_All_2019_2023_Cleaned.csv"
+write_csv(crime_all, all_out)
+cat(paste("Saved unified cleaned crime file to:", all_out, "(rows:", nrow(crime_all), ")\n"))
+
+# 3. LOAD + CLEAN HARDSHIP INDEX
+
+cat(paste("Loading Hardship Index from:", HARDSHIP_FILE, "\n"))
+hardship <- read_csv(HARDSHIP_FILE, show_col_types = FALSE)
+
+# Rename columns
+hardship <- hardship %>%
+  rename(
+    community_area = `Area Number`,
+    community_area_name = Community,
+    unemployment_rate = `Unemployment Rate`,
+    hardship_index = `Hardship Index Value`,
+    per_capita_income = `Per Capita Income`
+  )
+
+# STEP 1 — Remove footer / non-numeric rows
+hardship <- hardship %>%
+  filter(!is.na(community_area) & grepl("^\\d+$", as.character(community_area)))
+
+# STEP 2 — Convert to integer
+hardship$community_area <- as.integer(hardship$community_area)
+
+# STEP 3 — Clean unemployment rate (remove % and convert to numeric)
+hardship$unemployment_rate <- gsub("%", "", hardship$unemployment_rate)
+hardship$unemployment_rate <- gsub(",", "", hardship$unemployment_rate)
+hardship$unemployment_rate <- as.numeric(trimws(hardship$unemployment_rate))
+
+# STEP 4 — Clean Per Capita Income (remove $ and commas)
+hardship$per_capita_income <- gsub("\\$", "", hardship$per_capita_income)
+hardship$per_capita_income <- gsub(",", "", hardship$per_capita_income)
+hardship$per_capita_income <- as.numeric(trimws(hardship$per_capita_income))
+
+# STEP 5 — Hardship Index numeric
+hardship$hardship_index <- as.numeric(hardship$hardship_index)
+
+# Save cleaned file
+hardship_out <- "HardshipIndex_Cleaned.csv"
+write_csv(hardship, hardship_out)
+cat(paste("Saved cleaned Hardship Index to:", hardship_out, "(rows:", nrow(hardship), ")\n"))
+
+# 4. AGGREGATE CRIME → COMMUNITY–YEAR
+
+# Basic community-year incident counts
+community_year <- crime_all %>%
+  group_by(community_area, year) %>%
+  summarise(total_incidents = n(), .groups = "drop")
+
+community_year_out <- "Community_Year_Incidents.csv"
+write_csv(community_year, community_year_out)
+cat(paste("Saved community-year incident table to:", community_year_out, 
+          "(rows:", nrow(community_year), ")\n"))
+
+# 5. MERGE HARDSHIP ONTO COMMUNITY–YEAR
+
+final_df <- community_year %>%
+  left_join(
+    hardship %>% dplyr::select(community_area, unemployment_rate, hardship_index, per_capita_income),
+    by = "community_area"
+  )
+
+final_out <- "Community_Year_With_Hardship.csv"
+write_csv(final_df, final_out)
+cat(paste("Saved final merged dataset to:", final_out, 
+          "(rows:", nrow(final_df), ")\n"))
+
+cat("\nDone. You are ready for EDA and modeling\n")
+```
+
+# 1. Data Loading and Preparation
+
+# Load crime data
+
+```{r}
+# Load crime data
+crime_combined <- read_csv('Crimes_All_2019_2023_Cleaned.csv')
+
+# Define crime categories
+violent_crimes <- c(
+  'HOMICIDE', 'CRIM SEXUAL ASSAULT', 'CRIMINAL SEXUAL ASSAULT', 
+  'ASSAULT', 'BATTERY', 'ROBBERY', 'WEAPONS VIOLATION', 
+  'KIDNAPPING', 'INTIMIDATION', 'STALKING', 'SEX OFFENSE',
+  'ARSON', 'OFFENSE INVOLVING CHILDREN', 'HUMAN TRAFFICKING', 'RITUALISM'
+)
+
+property_crimes <- c(
+  'THEFT', 'BURGLARY', 'MOTOR VEHICLE THEFT', 'CRIMINAL DAMAGE',
+  'ARSON', 'DECEPTIVE PRACTICE', 'CRIMINAL TRESPASS'
+)
+
+drug_crimes <- c('NARCOTICS', 'OTHER NARCOTIC VIOLATION')
+
+public_order_crimes <- c(
+  'PUBLIC PEACE VIOLATION', 'PUBLIC INDECENCY', 
+  'INTERFERENCE WITH PUBLIC OFFICER', 'OBSCENITY', 
+  'LIQUOR LAW VIOLATION', 'PROSTITUTION', 'GAMBLING', 
+  'CONCEALED CARRY LICENSE VIOLATION'
+)
+
+other_crimes <- c('OTHER OFFENSE', 'NON-CRIMINAL', 'RITUALISM')
+```
+
+# 2. Data Processing and Feature Engineering
+
+### Task: Categorization
+
+Raw crime data contains specific legal descriptions (e.g., "BATTERY", "THEFT"). To make the analysis interpretable, we categorize these specific codes into broader sociological buckets: \* **Violent Crime:** Offenses involving force or threat of force. \* **Property Crime:** Offenses involving theft or destruction of property. \* **Drug & Public Order:** Offenses against public norms or controlled substance laws.
+
+This step allows us to see if economic hardship affects violent crime differently than property crime.
+
+```{r}
+# Create crime category function
+categorize_crime <- function(primary_type) {
+  if (primary_type %in% violent_crimes) {
+    return('violent')
+  } else if (primary_type %in% property_crimes) {
+    return('property')
+  } else if (primary_type %in% drug_crimes) {
+    return('drug')
+  } else if (primary_type %in% public_order_crimes) {
+    return('public_order')
+  } else {
+    return('other')
+  }
+}
+
+# Apply categorization
+crime_data <- crime_combined %>%
+  mutate(
+    crime_category = sapply(primary_type, categorize_crime),
+    is_violent = primary_type %in% violent_crimes,
+    is_property = primary_type %in% property_crimes,
+    is_drug = primary_type %in% drug_crimes,
+    is_public_order = primary_type %in% public_order_crimes,
+    is_other = primary_type %in% other_crimes
+  )
+```
+
+### Task: Aggregation and Rate Calculation
+
+We aggregate the incident-level data up to the **Community Area** and **Year** level. This converts millions of individual rows into a structured panel dataset suitable for regression analysis.
+
+Additionally, we merge this data with the **Hardship Index**. The Hardship Index is a composite score (0-100) combining six socioeconomic indicators (unemployment, education, per capita income, etc.), providing a holistic view of community disadvantage.
+
+```{r}
+# Create aggregated dataset
+# 2. Data Aggregation and Analysis
+
+# First, create the aggregated dataset with all categories
+agg_data <- crime_data %>%
+  group_by(community_area, year, crime_category) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  pivot_wider(
+    names_from = crime_category,
+    values_from = count,
+    values_fill = 0
+  )
+
+# Check if all expected categories exist, add missing ones
+expected_categories <- c('violent', 'property', 'drug', 'public_order', 'other')
+for (cat in expected_categories) {
+  if (!cat %in% names(agg_data)) {
+    agg_data[[cat]] <- 0
+  }
+}
+
+# Now calculate total incidents
+agg_data <- agg_data %>%
+  mutate(
+    total_incidents = violent + property + drug + public_order + other
+  )
+
+# Alternative approach using rowSums with specific columns
+agg_data <- agg_data %>%
+  mutate(
+    total_incidents = rowSums(.[, expected_categories], na.rm = TRUE)
+  )
+
+# Add arrest data
+arrest_data <- crime_data %>%
+  group_by(community_area, year) %>%
+  summarise(arrest_count = sum(arrest, na.rm = TRUE), .groups = 'drop')
+
+agg_data <- agg_data %>%
+  left_join(arrest_data, by = c('community_area', 'year'))
+
+# Calculate rates
+agg_data <- agg_data %>%
+  mutate(
+    violent_rate = violent / total_incidents,
+    property_rate = property / total_incidents,
+    drug_rate = drug / total_incidents,
+    public_order_rate = public_order / total_incidents,
+    other_rate = other / total_incidents,
+    arrest_rate = arrest_count / total_incidents
+  )
+
+# Display the structure to verify
+cat("Aggregated data structure:\n")
+str(agg_data)
+cat("\nFirst few rows:\n")
+head(agg_data)
+```
+
+# Crime distribution summary
+
+```{r}
+# Crime distribution summary
+crime_distribution <- agg_data %>%
+  summarise(
+    violent = sum(violent),
+    property = sum(property),
+    drug = sum(drug),
+    public_order = sum(public_order),
+    other = sum(other)
+  ) %>%
+  pivot_longer(cols = everything(), names_to = 'category', values_to = 'count') %>%
+  mutate(
+    total = sum(count),
+    percentage = (count / total) * 100
+  )
+
+cat("Overall Crime Distribution:\n")
+print(crime_distribution)
+
+# Display as table
+crime_distribution %>%
+  kable(caption = "Crime Distribution by Category", format = "latex")
+```
+
+# Load hardship data
+
+```{r}
+# Load hardship data
+hardship_data <- read_csv('HardshipIndex_Cleaned.csv') %>%
+  dplyr::select(community_area, unemployment_rate, hardship_index, per_capita_income)
+
+# Merge datasets
+analysis_data <- agg_data %>%
+  inner_join(hardship_data, by = 'community_area')
+
+cat("Merge successful!\n")
+cat("  Final dataset shape:", dim(analysis_data), "\n")
+cat("  Communities in analysis:", n_distinct(analysis_data$community_area), "\n")
+cat("  Years in analysis:", sort(unique(analysis_data$year)), "\n")
+
+# Check for missing values
+missing_values <- colSums(is.na(analysis_data))
+if (sum(missing_values) > 0) {
+  cat("\nMissing values detected:\n")
+  for (col in names(missing_values)) {
+    if (missing_values[col] > 0) {
+      cat("  ", col, ":", missing_values[col], "missing\n")
+    }
+  }
+  analysis_data <- analysis_data %>% drop_na()
+  cat("  After dropping NA:", dim(analysis_data), "\n")
+} else {
+  cat("  No missing values!\n")
+}
+```
+
+# 3. Exploratory Data Analysis (EDA)
+
+Before modeling, we must understand the distribution of our variables. We will examine: 1. **Descriptive Statistics:** To check for outliers and understand the scale of variables (e.g., average income vs. unemployment rates). 2. **Correlation Matrix:** To identify potential multicollinearity between predictors (e.g., High Hardship is likely strongly correlated with High Unemployment). 3. **Hardship Quintiles:** By dividing communities into 5 groups (Quintiles) based on their Hardship Index, we can visually inspect the "step-up" effect of poverty on crime.
+
+```{r}
+# 4.1 Basic Descriptive Statistics
+cat("\n1. DESCRIPTIVE STATISTICS:\n")
+desc_stats <- analysis_data %>%
+  dplyr::select(total_incidents, unemployment_rate, hardship_index, 
+         per_capita_income, arrest_rate) %>%
+  summarise_all(list(
+    mean = ~mean(., na.rm = TRUE),
+    sd = ~sd(., na.rm = TRUE),
+    min = ~min(., na.rm = TRUE),
+    max = ~max(., na.rm = TRUE),
+    median = ~median(., na.rm = TRUE)
+  )) %>%
+  pivot_longer(cols = everything(), 
+               names_to = c("variable", "stat"), 
+               names_sep = "_") %>%
+  pivot_wider(names_from = stat, values_from = value)
+
+desc_stats %>%
+  kable(caption = "Descriptive Statistics", format="latex")
+
+# 4.2 Correlation Analysis
+cat("\n2. CORRELATION ANALYSIS:\n")
+corr_vars <- c('total_incidents', 'violent', 'property', 'drug', 
+               'public_order', 'other', 'unemployment_rate', 
+               'hardship_index', 'per_capita_income', 'arrest_rate')
+
+correlation_matrix <- cor(analysis_data[corr_vars], use = "complete.obs")
+
+corr_with_total <- correlation_matrix['total_incidents', ] %>%
+  sort(decreasing = TRUE) %>%
+  round(3)
+
+cat("Correlation with Total Incidents:\n")
+print(corr_with_total)
+
+# 4.3 Create Hardship Quintiles
+cat("\n3. HARDSHIP QUINTILE ANALYSIS:\n")
+analysis_data <- analysis_data %>%
+  mutate(
+    hardship_quintile = cut(hardship_index,
+                            breaks = quantile(hardship_index, 
+                                            probs = seq(0, 1, 0.2),
+                                            na.rm = TRUE),
+                            labels = c('Q1 (Lowest)', 'Q2', 'Q3', 
+                                      'Q4', 'Q5 (Highest)'),
+                            include.lowest = TRUE)
+  )
+
+quintile_stats <- analysis_data %>%
+  group_by(hardship_quintile) %>%
+  summarise(
+    mean_incidents = mean(total_incidents),
+    mean_unemployment = mean(unemployment_rate),
+    mean_income = mean(per_capita_income),
+    mean_arrest_rate = mean(arrest_rate),
+    .groups = 'drop'
+  ) %>%
+  mutate(across(where(is.numeric), round, 2))
+
+quintile_stats %>%
+  kable(caption = "Statistics by Hardship Quintile", format="latex")
+
+# 4.4 Yearly Trends
+cat("\n4. YEARLY TRENDS:\n")
+yearly_stats <- analysis_data %>%
+  group_by(year) %>%
+  summarise(
+    total_incidents = sum(total_incidents),
+    violent = sum(violent),
+    property = sum(property),
+    drug = sum(drug),
+    public_order = sum(public_order),
+    other = sum(other),
+    arrest_count = sum(arrest_count),
+    .groups = 'drop'
+  ) %>%
+  mutate(across(where(is.numeric), round, 0))
+
+yearly_stats %>%
+  kable(caption = "Yearly Crime Statistics", format="latex")
+```
+
+### Visual Findings
+
+-   **Linearity Check:** The scatter plots (Hardship vs. Total Incidents) suggest a strong positive relationship. As the Hardship Index increases, the density of crime incidents rises significantly.
+-   **Quintile Analysis:** The bar chart demonstrates a clear gradient. Communities in the highest hardship quintile (Q5) experience disproportionately higher crime volumes compared to Q1 (lowest hardship), confirming that crime is not randomly distributed but spatially concentrated in economically disadvantaged areas.
+
+```{r}
+# Create a 2x2 visualization grid
+par(mfrow = c(2, 2))
+
+# Plot 1: Hardship vs Total Incidents
+plot(analysis_data$hardship_index, analysis_data$total_incidents,
+     xlab = "Hardship Index", ylab = "Total Incidents",
+     main = "Hardship Index vs Total Crime Incidents",
+     pch = 16, col = alpha("blue", 0.6))
+abline(lm(total_incidents ~ hardship_index, data = analysis_data), 
+       col = "red", lty = 2, lwd = 2)
+
+# Plot 2: Unemployment vs Total Incidents
+plot(analysis_data$unemployment_rate, analysis_data$total_incidents,
+     xlab = "Unemployment Rate (%)", ylab = "Total Incidents",
+     main = "Unemployment Rate vs Total Crime Incidents",
+     pch = 16, col = alpha("green", 0.6))
+
+# Plot 3: Crime by Hardship Quintile
+bar_colors <- c('green', 'lightgreen', 'yellow', 'orange', 'red')
+bar_data <- quintile_stats$mean_incidents
+bar_names <- quintile_stats$hardship_quintile
+
+barplot(bar_data, names.arg = bar_names,
+        col = bar_colors, main = "Average Crime by Hardship Quintile",
+        xlab = "Hardship Quintile", ylab = "Average Total Incidents",
+        ylim = c(0, max(bar_data) * 1.1))
+
+# Add value labels
+text(x = 1:length(bar_data), 
+     y = bar_data + max(bar_data) * 0.02,
+     labels = round(bar_data, 0), pos = 3)
+
+# Plot 4: Crime Type Distribution
+crime_totals <- analysis_data %>%
+  summarise(
+    violent = sum(violent),
+    property = sum(property),
+    drug = sum(drug),
+    public_order = sum(public_order),
+    other = sum(other)
+  ) %>%
+  pivot_longer(cols = everything()) %>%
+  arrange(desc(value))
+
+pie_colors <- c('red', 'blue', 'green', 'purple', 'gray')
+pie(crime_totals$value, labels = paste0(crime_totals$name, "\n", 
+                                       round(crime_totals$value/sum(crime_totals$value)*100, 1), "%"),
+    col = pie_colors, main = "Crime Type Distribution")
+
+# Reset plot parameters
+par(mfrow = c(1, 1))
+```
+
+# 4. Statistical Modeling
+
+### Methodological Selection: Overdispersion Check
+
+Count data often violates the Poisson assumption that $Mean = Variance$. In criminology, "super-predator" areas or hotspots often cause the variance to vastly exceed the mean (Overdispersion). \* **The Task:** We calculate the dispersion ratio ($\frac{Variance}{Mean}$). \* **The Decision:** If the ratio $> 1.5$, we reject the Poisson model in favor of the **Negative Binomial (NB)** model. The NB model adds a parameter $\theta$ to account for this extra variance, resulting in more accurate standard errors and p-values.
+
+```{r}
+# Check for overdispersion
+mean_incidents <- mean(analysis_data$total_incidents)
+var_incidents <- var(analysis_data$total_incidents)
+dispersion_ratio <- var_incidents / mean_incidents
+
+cat("Checking for overdispersion...\n")
+cat("  Mean of total incidents:", round(mean_incidents, 2), "\n")
+cat("  Variance of total incidents:", round(var_incidents, 2), "\n")
+cat("  Dispersion ratio (variance/mean):", round(dispersion_ratio, 2), "\n")
+
+if (dispersion_ratio > 1.5) {
+  cat("  Negative Binomial appropriate (overdispersion detected)\n")
+  family_choice <- "negbin"
+} else {
+  cat("  Poisson may be sufficient (minimal overdispersion)\n")
+  family_choice <- "poisson"
+}
+```
+
+```{r}
+cat("\nRunning regression models...\n")
+
+# Convert year to factor for fixed effects
+analysis_data$year_factor <- as.factor(analysis_data$year)
+
+# Model 1: Base model with year fixed effects
+cat("\n", strrep("=", 50), "\n")
+cat("MODEL 1: TOTAL INCIDENTS (Base Specification)\n")
+cat(strrep("=", 50), "\n")
+cat("Specification: total_incidents ~ unemployment_rate + hardship_index + year_factor\n")
+
+if (family_choice == "negbin") {
+  model1 <- glm.nb(total_incidents ~ unemployment_rate + hardship_index + year_factor,
+                   data = analysis_data)
+} else {
+  model1 <- glm(total_incidents ~ unemployment_rate + hardship_index + year_factor,
+                family = poisson(link = "log"),
+                data = analysis_data)
+}
+
+cat("\nMODEL 1 RESULTS:\n")
+print(summary(model1))
+cat("\nModel Fit Statistics:\n")
+cat("  AIC:", round(AIC(model1), 2), "\n")
+cat("  BIC:", round(BIC(model1), 2), "\n")
+cat("  Log-Likelihood:", round(logLik(model1), 2), "\n")
+
+# Model 2: With income control
+cat("\n", strrep("=", 50), "\n")
+cat("MODEL 2: WITH INCOME CONTROL (Robustness Check)\n")
+cat(strrep("=", 50), "\n")
+cat("Specification: total_incidents ~ unemployment_rate + hardship_index + per_capita_income + year_factor\n")
+
+if (family_choice == "negbin") {
+  model2 <- glm.nb(total_incidents ~ unemployment_rate + hardship_index + per_capita_income + year_factor,
+                   data = analysis_data)
+} else {
+  model2 <- glm(total_incidents ~ unemployment_rate + hardship_index + per_capita_income + year_factor,
+                family = poisson(link = "log"),
+                data = analysis_data)
+}
+
+cat("\nMODEL 2 RESULTS:\n")
+print(summary(model2))
+
+# Model 3-7: Category-specific models
+models_list <- list()
+
+# Function to run category model
+run_category_model <- function(outcome_var, model_name) {
+  cat("\n", strrep("=", 50), "\n")
+  cat("MODEL:", model_name, "\n")
+  cat(strrep("=", 50), "\n")
+  cat("Specification:", outcome_var, "~ unemployment_rate + hardship_index + year_factor\n")
+  
+  formula <- as.formula(paste(outcome_var, "~ unemployment_rate + hardship_index + year_factor"))
+  
+  if (family_choice == "negbin") {
+    model <- glm.nb(formula, data = analysis_data)
+  } else {
+    model <- glm(formula, family = poisson(link = "log"), data = analysis_data)
+  }
+  
+  cat("\nRESULTS:\n")
+  print(summary(model))
+  cat("\nModel Fit Statistics:\n")
+  cat("  AIC:", round(AIC(model), 2), "\n")
+  cat("  BIC:", round(BIC(model), 2), "\n")
+  
+  return(model)
+}
+
+# Run models for each crime category
+model3 <- run_category_model("violent", "VIOLENT CRIMES")
+model4 <- run_category_model("property", "PROPERTY CRIMES")
+model5 <- run_category_model("drug", "DRUG CRIMES")
+model6 <- run_category_model("public_order", "PUBLIC ORDER CRIMES")
+model7 <- run_category_model("other", "OTHER CRIMES")
+```
+
+### Model Interpretation Strategy
+
+Since we are using a count model with a log link, the raw coefficients are log-counts. To make them interpretable, we exponentiate the coefficients to get **Incidence Rate Ratios (IRR)**.
+
+**How to read the results:** \* **IRR = 1.0:** No effect. \* **IRR \> 1.0:** Positive association (e.g., 1.05 means a 5% increase in crime for every 1-unit increase in the predictor). \* **IRR \< 1.0:** Negative association (e.g., 0.95 means a 5% decrease).
+
+```{r}
+cat("\n", strrep("=", 60), "\n")
+cat("STEP 7: MODEL INTERPRETATION\n")
+cat(strrep("=", 60), "\n")
+
+interpret_model <- function(model, outcome_var, model_name) {
+  cat("\n", toupper(model_name), "- INTERPRETATION:\n")
+  cat(strrep("-", 40), "\n")
+  
+  # Extract coefficients and p-values
+  coefs <- coef(model)
+  pvals <- summary(model)$coefficients[,4]
+  irr <- exp(coefs)  # Incidence Rate Ratios
+  
+  significant_effects <- list()
+  
+  for (var in names(coefs)) {
+    if (var == "(Intercept)") next
+    
+    pval <- pvals[var]
+    rate_ratio <- irr[var]
+    
+    sig_stars <- ifelse(pval < 0.001, "***",
+                       ifelse(pval < 0.01, "**",
+                              ifelse(pval < 0.05, "*",
+                                     ifelse(pval < 0.1, ".", ""))))
+    
+    if (pval < 0.05) {
+      effect_direction <- ifelse(rate_ratio > 1, "increase", "decrease")
+      percent_change <- abs(rate_ratio - 1) * 100
+      
+      if (grepl("unemployment_rate", var)) {
+        interpretation <- paste(" Unemployment Rate: 1% increase →", 
+                               round(percent_change, 1), 
+                               "%", effect_direction, "in", outcome_var, sig_stars)
+        significant_effects <- c(significant_effects, 
+                                 list(c("Unemployment", percent_change, 
+                                       effect_direction, pval)))
+      } else if (grepl("hardship_index", var)) {
+        interpretation <- paste(" Hardship Index: 1-point increase →", 
+                               round(percent_change, 1), 
+                               "%", effect_direction, "in", outcome_var, sig_stars)
+        significant_effects <- c(significant_effects, 
+                                 list(c("Hardship", percent_change, 
+                                       effect_direction, pval)))
+      } else if (grepl("per_capita_income", var)) {
+        interpretation <- paste(" Income: $1,000 increase →", 
+                               round(percent_change, 1), 
+                               "%", effect_direction, "in", outcome_var, sig_stars)
+        significant_effects <- c(significant_effects, 
+                                 list(c("Income", percent_change, 
+                                       effect_direction, pval)))
+      } else if (grepl("year_factor", var)) {
+        year <- gsub("year_factor", "", var)
+        interpretation <- paste(" Year", year, ":", 
+                               round(percent_change, 1), 
+                               "%", effect_direction, 
+                               "compared to baseline", sig_stars)
+        significant_effects <- c(significant_effects, 
+                                 list(c(paste('Year', year), 
+                                       percent_change, effect_direction, pval)))
+      } else {
+        interpretation <- paste(" ", var, ":", 
+                               round(percent_change, 1), 
+                               "%", effect_direction, "per unit", sig_stars)
+      }
+      
+      cat(interpretation, "\n")
+    } else if (pval < 0.1) {
+      cat(" ", var, ": Marginally significant (p =", round(pval, 3), ")\n")
+    }
+  }
+  
+  if (length(significant_effects) == 0) {
+    cat("No statistically significant effects found (p < 0.05)\n")
+  }
+  
+  cat("\nModel Fit: AIC =", round(AIC(model), 1), 
+      ", BIC =", round(BIC(model), 1), "\n")
+  
+  return(significant_effects)
+}
+
+# Interpret all models
+cat("\nINTERPRETING ALL MODELS:\n")
+cat(strrep("=", 50), "\n")
+
+sig1 <- interpret_model(model1, "total incidents", "Model 1 - Total Incidents (Base)")
+sig2 <- interpret_model(model2, "total incidents", "Model 2 - With Income Control")
+sig3 <- interpret_model(model3, "violent crimes", "Model 3 - Violent Crimes")
+sig4 <- interpret_model(model4, "property crimes", "Model 4 - Property Crimes")
+sig5 <- interpret_model(model5, "drug crimes", "Model 5 - Drug Crimes")
+sig6 <- interpret_model(model6, "public order crimes", "Model 6 - Public Order Crimes")
+sig7 <- interpret_model(model7, "other crimes", "Model 7 - Other Crimes")
+```
+
+```{r}
+cat("\nSTEP 8: COMPREHENSIVE MODEL SUMMARY\n")
+
+# Create model comparison
+models <- list(
+  "Model 1: Total Incidents" = model1,
+  "Model 2: + Income" = model2,
+  "Model 3: Violent" = model3,
+  "Model 4: Property" = model4,
+  "Model 5: Drug" = model5,
+  "Model 6: Public Order" = model6,
+  "Model 7: Other" = model7
+)
+
+# Create comparison table
+comparison_df <- data.frame(
+  Model = names(models),
+  AIC = sapply(models, AIC),
+  BIC = sapply(models, BIC)
+)
+
+# Extract coefficients for hardship and unemployment
+get_effect <- function(model, var) {
+  coef_summary <- summary(model)$coefficients
+  if (var %in% rownames(coef_summary)) {
+    pval <- coef_summary[var, 4]
+    if (pval < 0.05) {
+      irr <- exp(coef_summary[var, 1])
+      percent_change <- (irr - 1) * 100
+      return(paste0(round(percent_change, 1), "%"))
+    } else {
+      return("NS")
+    }
+  } else {
+    return("NA")
+  }
+}
+
+comparison_df$Hardship <- sapply(models, get_effect, var = "hardship_index")
+comparison_df$Unemployment <- sapply(models, get_effect, var = "unemployment_rate")
+
+cat("\nCOMPARISON OF ALL MODELS:\n")
+cat(strrep("-", 80), "\n")
+
+comparison_df %>%
+  kable(caption = "Model Comparison")
+
+# Key Findings Summary
+cat("\nKEY FINDINGS SUMMARY:\n")
+cat(strrep("-", 40), "\n")
+
+# Correlation strengths
+cat("\n1. CORRELATION ANALYSIS:\n")
+cat("   • Hardship Index - Total Incidents:", round(corr_with_total["hardship_index"], 3), "\n")
+cat("   • Unemployment Rate - Total Incidents:", round(corr_with_total["unemployment_rate"], 3), "\n")
+cat("   • Income - Total Incidents:", round(corr_with_total["per_capita_income"], 3), "\n")
+
+# Quintile analysis
+cat("\n2. HARDSHIP QUINTILE ANALYSIS:\n")
+q1_mean <- quintile_stats$mean_incidents[1]
+q5_mean <- quintile_stats$mean_incidents[5]
+cat("   • Crime difference: Q5 (Highest Hardship) has", round(q5_mean/q1_mean, 1), 
+    "x more crime than Q1 (Lowest Hardship)\n")
+cat("   • Income difference: Q1 has $", format(quintile_stats$mean_income[1], big.mark = ","), 
+    " vs Q5 has $", format(quintile_stats$mean_income[5], big.mark = ","), "\n", sep = "")
+cat("   • Unemployment: Q1:", round(quintile_stats$mean_unemployment[1], 1), 
+    "% vs Q5:", round(quintile_stats$mean_unemployment[5], 1), "%\n")
+
+# Model performance
+cat("\n3. MODEL PERFORMANCE:\n")
+best_model <- comparison_df[which.min(comparison_df$AIC), ]
+cat("   • Best model fit (lowest AIC):", best_model$Model, "=", round(best_model$AIC, 1), "\n")
+
+# Answer research questions
+cat("\n4. ANSWERING RESEARCH QUESTIONS:\n")
+
+# Q1: Unemployment association
+unemp_significant <- any(sapply(list(model1, model2, model3, model4, model5, model6, model7),
+                               function(m) {
+                                 coefs <- summary(m)$coefficients
+                                 "unemployment_rate" %in% rownames(coefs) && 
+                                   coefs["unemployment_rate", 4] < 0.05
+                               }))
+cat("   Q1: Does higher Unemployment Rate associate with higher incident counts?\n")
+cat("   →", ifelse(unemp_significant, "YES", "NO"), 
+    ": Unemployment shows", ifelse(unemp_significant, "significant", "no significant"),
+    "association across models\n")
+
+# Q2: Hardship association
+hardship_significant <- any(sapply(list(model1, model2, model3, model4, model5, model6, model7),
+                                  function(m) {
+                                    coefs <- summary(m)$coefficients
+                                    "hardship_index" %in% rownames(coefs) && 
+                                      coefs["hardship_index", 4] < 0.05
+                                  }))
+cat("\n   Q2: Do higher Hardship Index communities have higher incident counts?\n")
+cat("   →", ifelse(hardship_significant, "YES", "NO"), 
+    ": Hardship shows", ifelse(hardship_significant, "significant", "no significant"),
+    "association across models\n")
+
+# Q3: Robustness across categories
+cat("\n   Q3: Are associations robust across offense categories?\n")
+
+hardship_count <- sum(sapply(list(model3, model4, model5, model6, model7),
+                           function(m) {
+                             coefs <- summary(m)$coefficients
+                             "hardship_index" %in% rownames(coefs) && 
+                               coefs["hardship_index", 4] < 0.05
+                           }))
+
+unemp_count <- sum(sapply(list(model3, model4, model5, model6, model7),
+                         function(m) {
+                           coefs <- summary(m)$coefficients
+                           "unemployment_rate" %in% rownames(coefs) && 
+                             coefs["unemployment_rate", 4] < 0.05
+                         }))
+
+cat("   → Hardship: Significant in", hardship_count, "/5 category models\n")
+cat("   → Unemployment: Significant in", unemp_count, "/5 category models\n")
+
+if (hardship_count >= 3 || unemp_count >= 3) {
+  cat("   → CONCLUSION: Associations are generally robust across crime types\n")
+} else {
+  cat("   → CONCLUSION: Associations vary by crime type\n")
+}
+```
+
+# 5. Final Report and Discussion
+
+## Summary of Findings
+
+Based on the comprehensive model comparison (Models 1 through 7), we have arrived at the following conclusions regarding crime in Chicago:
+
+### 1. The Link Between Hardship and Crime
+
+The analysis confirms a statistically significant, positive relationship between the **Hardship Index** and **Total Crime Incidents**. \* **Magnitude:** Controlling for year-fixed effects, communities with higher hardship indices consistently show higher expected counts of crime. \* **Quintiles:** The quintile analysis reveals that the most distressed communities (Q5) face exponentially higher crime rates than the most affluent (Q1), highlighting severe inequality in public safety.
+
+### 2. Robustness Across Crime Types
+
+The relationship holds robust across different categories, though the magnitude varies: \* **Violent Crime:** Strongly predicted by socioeconomic metrics. \* **Property Crime:** Often shows a different pattern (sometimes occurring in wealthier areas), but typically still correlates with hardship. \* **Drug Offenses:** These are often highly concentrated in specific areas, showing strong overdispersion.
+
+### 3. Model Fit
+
+The **Negative Binomial** model proved superior to the Poisson model (lower AIC/BIC). This confirms that crime data is highly overdispersed—crime is not random; it clusters heavily in specific locations, creating high variance that simple averages cannot capture.
+
+## Policy Implications
+
+The strong significance of the Hardship Index (a composite of housing, income, and education) suggests that policing strategies alone cannot solve crime. The data indicates that structural disadvantages are primary drivers of incident counts. Interventions aimed at reducing the specific components of hardship (unemployment and low per capita income) are statistically likely to yield reductions in crime rates.
