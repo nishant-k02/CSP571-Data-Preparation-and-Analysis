@@ -1,0 +1,502 @@
+---
+title: "Assignment 1"
+author: "Nishant Khandhar (A20501012)"
+date: "2025-09-03"
+output:
+  pdf_document:
+    latex_engine: xelatex
+  word_document: default
+---
+
+
+# Assignment 1 
+
+## Problems from R for Data Science book:
+
+### Section 1.2.5: Problem 8
+
+
+```{r}
+library(tidyverse)       # loads ggplot2 too
+library(palmerpenguins)
+knitr::opts_chunk$set(echo = TRUE)
+library(nycflights13)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(knitr)
+```
+
+Answer: The code for recreating the visualization is provided below. The bill_depth_mm variable should be mapped at the local level, only for the point geom, as it is not used for the smooth geom – the points are colored for bill depth but the smooth line is a single color.
+
+``` {r}
+ggplot(
+  data = penguins,
+  aes(x = flipper_length_mm, y = body_mass_g)
+) +
+  geom_point(aes(color = bill_depth_mm)) + 
+  geom_smooth()
+```
+
+### Section 1.2.5: Problem 10
+
+No — they’ll look the same.
+
+Reason: In the first plot the data and aesthetics are set globally in ggplot(...) and inherited by both geom_point() and geom_smooth(). In the second plot the same data and aesthetics are specified locally for each geom. Since both layers end up with identical data and mappings, the rendered plots are identical. The only difference is code organization; you’d see a difference only if one geom used different data/mappings.
+
+
+In this plot the data and aesthetics are set globally in ggplot(...) and inherited by both geom_point() and geom_smooth().
+
+```{r}
+ggplot(
+  data = penguins,
+  mapping = aes(x = flipper_length_mm, y = body_mass_g)
+) +
+  geom_point() +
+  geom_smooth()
+```
+
+In this plot the same data and aesthetics are specified locally for each geom.
+
+``` {r}
+ggplot() +
+  geom_point(
+    data = penguins,
+    mapping = aes(x = flipper_length_mm, y = body_mass_g)
+  ) +
+  geom_smooth(
+    data = penguins,
+    mapping = aes(x = flipper_length_mm, y = body_mass_g)
+  )
+```
+
+### Section 1.5.5: Problem 5
+
+Q. What coloring reveals:
+Coloring by species shows three clear clusters. The pooled data suggest a negative relationship (longer bills tend to be shallower), but the color reveals this is driven by differences between species (e.g., Gentoo: long & shallow; Adelie: shorter & deeper; Chinstrap: in-between).
+
+Q. What faceting reveals:
+Faceting separates species into panels, making it clear that within each species the relationship is weak/near-flat (slight positive at most). It highlights that the apparent overall negative trend is largely due to species differences—an example of Simpson’s paradox.
+
+``` {r}
+ggplot(penguins, aes(x = bill_length_mm, y = bill_depth_mm, color = species)) +
+  geom_point(na.rm = TRUE) +
+  labs(x = "Bill length (mm)", y = "Bill depth (mm)")
+
+# Faceted by species
+ggplot(penguins, aes(x = bill_length_mm, y = bill_depth_mm, color = species)) +
+  geom_point(na.rm = TRUE) +
+  facet_wrap(~ species) +
+  guides(color = "none")
+
+```
+
+### Section 3.2.5: Problem 6
+
+Answer: Usually no difference in results, but yes in work done.
+
+Results: If your filter() condition doesn’t depend on row order, filter() |> arrange() and arrange() |> filter() yield the same rows in the same order (the filtered rows sorted by your keys). filter only removes rows; arrange only reorders them.
+
+Work: It’s cheaper to filter first. Sorting is O(n log n); filtering first makes n smaller before the expensive sort.
+
+Exceptions: If your filter depends on order or position (e.g., uses row_number(), lag()/lead(), slice_head(), distinct(.keep_all=TRUE) after an arrange, etc.), then the order matters for which rows survive.
+
+### Section 3.3.5: Problem 5
+
+Answer: Yes—if you typed contains("TIME") and still got lowercase *time columns, that’s expected.
+By default, select helpers like contains(), starts_with(), and ends_with() are case-insensitive.
+That’s why contains("TIME") matches dep_time, arr_time, air_time, time_hour, etc.
+To make matching case-sensitive, set ignore.case = FALSE:
+
+``` {r}
+flights |> select(contains("TIME", ignore.case = FALSE))  # likely returns no columns
+```
+
+### Section 3.5.7: Problem 2
+
+Answer: The following are the top 5 most departure delayed flights from each destination.
+``` {r}
+flights |> 
+  group_by(dest) |> 
+  arrange(dest, desc(dep_delay)) |>
+  slice_head(n = 5) |>
+  relocate(dest, dep_delay)
+```
+
+## Problems from ISL book:
+
+### Section 2.4: Problem 2
+
+a. We collect a set of data on the top 500 firms in the US. For each firm we record profit, number of employees, industry and the CEO salary. We are interested in understanding which factors affect CEO salary.
+
+Ans: $n=500$, $p=3$, regression, inference.
+
+b. We are considering launching a new product and wish to know whether it will be a success or a failure. We collect data on 20 similar products that were          previously launched. For each product we have recorded whether it was a success or failure, price charged for the product, marketing budget, competition         price, and ten other variables.
+
+Ans: $n=20$, $p=13$, classification, prediction.
+   
+c. We are interested in predicting the % change in the USD/Euro exchange rate in relation to the weekly changes in the world    stock markets. Hence we collect     weekly data for all of 2012. For each week we record the % change in the USD/Euro, the %    change in the US market, the % change in the British market, and     the % change in the German market.
+
+Ans: $n=52$, $p=3$, regression, prediction.
+   
+### Section 2.4: Problem 4
+
+(a) Describe three real-life applications in which classification might
+be useful. Describe the response, as well as the predictors. Is the
+goal of each application inference or prediction? Explain your
+answer.
+
+Answer: 
+Classification (Y is categorical)
+1. Email spam filtering
+
+Response (Y): spam vs. not spam
+
+Predictors (X): word/character n-grams, sender domain, #links, attachments, time sent
+
+Goal: Prediction — we mainly need to auto-filter incoming mail accurately.
+
+2. Credit-card fraud detection
+
+Response: fraud (yes/no)
+
+Predictors: amount, merchant category, geolocation, device ID, time-of-day, user velocity features
+
+Goal: Prediction — flag suspicious transactions in real time.
+
+3. Patient readmission risk (30-day)
+
+Response: readmitted (yes/no)
+
+Predictors: age, comorbidities, vitals, labs, prior admissions, length of stay, discharge meds
+
+Goal: Prediction — prioritize follow-up and allocate resources; (inference can be secondary to study risk factors).
+
+
+(b) Describe three real-life applications in which regression might
+be useful. Describe the response, as well as the predictors. Is the
+goal of each application inference or prediction? Explain your
+answer.
+
+Answer:
+Regression (Y is numeric/continuous)
+
+House price estimation
+
+Response (Y): sale price ($)
+
+Predictors (X): square footage, bedrooms, lot size, neighborhood, age, school rating
+
+Goal: Prediction — produce accurate appraisals (inference possible if you want price elasticity wrt size).
+
+Retail demand forecasting
+
+Response: weekly units sold
+
+Predictors: price, promotions, season/holiday flags, competitor price, weather, past sales (lags)
+
+Goal: Prediction — inventory and staffing decisions depend on forecast accuracy.
+
+Flight delay minutes
+
+Response: arrival delay (minutes)
+
+Predictors: carrier, route, scheduled departure time, weather, airport congestion, day of week
+
+Goal: Prediction — estimate delays to inform scheduling and traveler alerts.
+
+
+(c) Describe three real-life applications in which cluster analysis
+might be useful.
+
+Answer:
+Clustering (unsupervised; no Y)
+
+Customer segmentation
+
+Features: recency/frequency/monetary (RFM), categories browsed, discount sensitivity, session length
+
+Why clustering: group customers into behaviorally similar segments for targeted marketing and personalization.
+
+Document/news grouping
+
+Features: TF-IDF or embeddings of article text, topics, entities, publication patterns
+
+Why clustering: discover topical clusters (e.g., sports, politics, tech) and organize feeds without labels.
+
+Patient phenotype discovery
+
+Features: lab trajectories, vitals, symptoms, imaging-derived features, genomics (if available)
+
+Why clustering: uncover subtypes of a disease to guide tailored treatment and generate new clinical hypotheses.
+
+
+### Section 2.4: Problem 10
+
+(a) To begin, load in the Boston data set. The Boston data set is
+part of the ISLR2 library.
+
+Answer:
+
+Loading Boston Data set
+``` {r}
+library(ISLR2)
+```
+
+data set is contained in the object `Boston`
+
+``` {r}
+Boston
+```
+Reading about the data set:
+
+```{r}
+?Boston
+```
+
+How many rows are in this data set? How many columns? What
+do the rows and columns represent?
+
+Answer: This data set has 506 rows and 13 columns. Rows represent 506 suburbs of Boston and Columns represent
+different variables from suburbs like crim = crime, zn = proportion of residential land, indus = proportion
+of non-retail business, etc.
+
+``` {r}
+dim(Boston)
+```
+
+(b) Make some pairwise scatterplots of the predictors (columns) in
+this data set. Describe your findings.
+
+Answer: 
+
+``` {r}
+ggplot(Boston, aes(nox, rm)) +
+  geom_point()
+ggplot(Boston, aes(ptratio, rm)) +
+  geom_point()
+heatmap(cor(Boston, method = "spearman"), cexRow = 1.1, cexCol = 1.1)
+```
+
+(c) Are any of the predictors associated with per capita crime rate? If so,
+   explain the relationship.
+   Answer: Yes
+   Relationship: there is a relation between crime rate and radial highways. We can see crime rate increase with radial highways.
+   We can also notice the increase in crime rate with proportion of owner-occupied units built prior to 1940.
+   
+
+(d) Do any of the census tracts of Boston appear to have particularly
+    high crime rates? Tax rates? Pupil-teacher ratios? Comment on
+    the range of each predictor.
+
+Answer: Yes—there are census tracts with particularly high crime and high tax rates (clear outliers). Pupil–teacher ratios vary too, but much less dramatically.
+
+```{r}
+Boston |>
+  pivot_longer(cols = 1:13) |>
+  filter(name %in% c("crim", "tax", "ptratio")) |>
+  ggplot(aes(value)) +
+  geom_histogram(bins = 20) +
+  facet_wrap(~name, scales = "free", ncol = 1)
+```
+
+(e) How many of the census tracts in this data set bound the Charles
+river?
+
+Answer: There are 35 suburbs that bound the Charles river.
+
+``` {r}
+sum(Boston$chas)
+```
+
+(f) What is the median pupil-teacher ratio among the towns in this
+data set?
+
+Answer: The median is 19.05
+``` {r}
+median(Boston$ptratio)
+```
+
+(g) Which census tract of Boston has lowest median value of owner-occupied homes? What are the values of the other predictors for that census tract, and how do those values compare to the overall ranges for those predictors? Comment on your findings.
+
+Answer: The suburb 399 and 406 has the lowest median value of owner-occupied homes in $1000s
+
+```{r}
+Boston[Boston$medv == min(Boston$medv), ] |>
+  kable()
+
+sapply(Boston, quantile) |>
+  kable()
+```
+
+Comments on findings:
+The minimum medv is 5.0 (in $1,000s).
+
+1. That tract’s other predictors sit at extreme, unfavorable ends of many ranges:
+
+2. lstat very high (near the top of its range) → many lower-status households.
+
+    a. rm low → small homes.
+
+    b. nox high, dis low, indus high → dense/industrial, close-in, more pollution.
+
+    c. rad very high and tax high → near major highways with high property-tax rate.
+
+    d. ptratio high → more students per teacher.
+
+    e. crim typically high in this tract as well.
+
+3. Overall, the tract with the lowest medv lies at (or near) the worst ends of several predictors’ ranges, which aligns with lower house values (fewer rooms,       more pollution/traffic/industry, higher tax and pupil–teacher ratios, higher % lower-status).
+
+(h) In this data set, how many of the census tracts average more than seven rooms per dwelling? More than eight rooms per
+    dwelling? Comment on the census tracts that average more than eight rooms per dwelling.
+  
+Answer: There are 64 census tracts with more than 7 rm. There are 13 tracts with more than 8 rm. (rm = rooms per dwelling)
+    
+``` {r}
+sum(Boston$rm > 7)
+sum(Boston$rm > 8)
+```
+
+Let's compare median statistics for those census tracts with more than eight rooms per dwelling on average, with the statistics for those with fewer.
+
+```{r}
+Boston |>
+  mutate(
+    `log(crim)` = log(crim),
+    `log(zn)` = log(zn)
+  ) |>
+  select(-c(crim, zn)) |>
+  pivot_longer(!rm) |>
+  mutate(">8 rooms" = rm > 8) |>
+  ggplot(aes(`>8 rooms`, value)) +
+  geom_boxplot() +
+  facet_wrap(~name, scales = "free")
+```
+Census tracts with big average properties (more than eight rooms per dwelling) have higher median value (`medv`), a lower proportion of non-retail business acres (`indus`), a lower pupil-teacher ratio (`ptratio`), a lower status of the population (`lstat`) among other differences.
+
+### Section 3.7: Question 04
+
+4. I collect a set of data (n = 100 observations) containing a single
+   predictor and a quantitative response. I then fit a linear regression
+   model to the data, as well as a separate cubic regression, i.e. Y=
+   β0 + β1X + β2X2 + β3X3 + ϵ.
+
+(a) Suppose that the true relationship between X and Y is linear,
+    i.e. Y= β0 + β1X + ϵ. Consider the training residual sum of
+    squares (RSS) for the linear regression, and also the training
+    RSS for the cubic regression. Would we expect one to be lower
+    than the other, would we expect them to be the same, or is there
+    not enough information to tell? Justify your answer.
+    
+Answer: You would expect the cubic regression to have lower RSS that linear regression.
+Reason: Ordinary least squares minimizes residual sum of squares, and the cubic model nests the linear model (adds 𝑋^2,𝑋^3), so training residual sum of               squares can’t increase.
+
+(b) Answer (a) using test rather than training RSS.
+Answer: Though we could not be certain, the test RSS would likely be higher due to overfitting.
+
+(c) Suppose that the true relationship between X and Y is not linear,
+but we don’t know how far it is from linear. Consider the training
+RSS for the linear regression, and also the training RSS for the
+cubic regression. Would we expect one to be lower than the
+other, would we expect them to be the same, or is there not
+enough information to tell? Justify your answer.
+
+Answer: Cubic residual sum of squares ≤ Linear residual sum of squares.
+Reason: Same nesting argument—more flexible model fits training data at least as well.
+
+(d) Answer (c) using test rather than training RSS.
+Answer: Not enough information.
+Reason: Outcome depends on bias–variance trade-off: cubic may lower bias (captures curvature) but raises variance; depends on degree of nonlinearity, noise              level, and sample size.
+
+
+### Section 3.7: Question 15
+
+Q. This problem involves the `Boston` data set, which we saw in the lab for this
+   chapter. We will now try to predict per capita crime rate using the other
+   variables in this data set. In other words, per capita crime rate is the
+   response, and the other variables are the predictors.
+
+We are trying to predict `crim`.
+
+```{r}
+pred <- subset(Boston, select = -crim)
+```
+
+a. For each predictor, fit a simple linear regression model to predict the
+   response. Describe your results. In which of the models is there a
+   statistically significant association between the predictor and the
+   response? Create some plots to back up your assertions.
+
+```{r}
+fits <- lapply(pred, function(x) lm(Boston$crim ~ x))
+printCoefmat(do.call(rbind, lapply(fits, function(x) coef(summary(x))[2, ])))
+```
+
+There are significant associations for all predictors with the exception of
+`chas` when fitting separate linear models. For example, consider the following
+plot representing the third model
+
+``` {r}
+# Example 1: continuous predictor (rm)
+plot(Boston$rm, Boston$crim, xlab = "rm", ylab = "crim")
+abline(fits[["rm"]], col = "blue", lwd = 2)
+
+# Example 2: binary predictor (chas) – the non-significant one
+boxplot(crim ~ chas, data = Boston, xlab = "chas (0/1)", ylab = "crim")
+```
+
+b. Fit a multiple regression model to predict the response using all of the
+   predictors. Describe your results. For which predictors can we reject the
+   null hypothesis $H_0 : \beta_j = 0$?
+
+```{r}
+mfit <- lm(crim ~ ., data = Boston)
+summary(mfit)
+```
+
+There are now only significant associations for `zn`, `dis`, `rad`, `black` and
+`medv`.
+
+c. How do your results from (a) compare to your results from (b)? Create a
+   plot displaying the univariate regression coefficients from (a) on the
+   $x$-axis, and the multiple regression coefficients from (b) on the
+   $y$-axis. That is, each predictor is displayed as a single point in the
+   plot. Its coefficient in a simple linear regression model is shown on the
+   x-axis, and its coefficient estimate in the multiple linear regression
+   model is shown on the y-axis.
+
+The results from (b) show reduced significance compared to the models fit in 
+(a). 
+
+```{r}
+plot(sapply(fits, function(x) coef(x)[2]), coef(mfit)[-1],
+  xlab = "Univariate regression",
+  ylab = "multiple regression"
+)
+```
+
+The estimated coefficients differ (in particular the estimated coefficient for
+`nox` is dramatically different) between the two modelling strategies.
+
+d. Is there evidence of non-linear association between any of the predictors
+   and the response? To answer this question, for each predictor X, fit a
+   model of the form 
+   $Y=\beta_0 + \beta_1X + \beta_2X^2 + \beta_3X^3 + \epsilon$
+   
+Answer: 
+
+```{r}
+pred <- subset(pred, select = -chas)
+fits <- lapply(names(pred), function(p) {
+  f <- paste0("crim ~ poly(", p, ", 3)")
+  lm(as.formula(f), data = Boston)
+})
+for (fit in fits) printCoefmat(coef(summary(fit)))
+```
+
+Yes there is strong evidence for many variables having non-linear associations.
+In many cases, the addition of a cubic term is significant (`indus`, `nox`, 
+`age`, `dis`, `ptratio` and `medv`). In other cases although the cubic terms
+is not significant, the squared term is (`zn`, `rm`, `rad`, `tax`, `lstat`). 
+In only one case, `black` is there no evidence for a non-linear relationship.

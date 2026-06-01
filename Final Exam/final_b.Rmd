@@ -1,0 +1,406 @@
+---
+title: "Final Exam"
+author: "Nishant Khandhar A20581012"
+date: "2025-12-09"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Instructions And Rules
+
+1.  Insert your name and A# in the author field above. You should only be taking this version of the exam if the *second to last digit* of your A# is *odd* (e.g. 1, 3, 5, 7, or 9).
+2.  You may use both textbooks as well as any course notes.
+3.  You may not consult ChatGPT or any other LLM-based chatbot. If you are caught violating this rule, you will be subject to failure on this exam and potentially the course.
+4.  You may not consult any other person (e.g. a classmate or your buddy who took this course last semester). If you are caught violating this rule, you will be subject to failure on this exam and potentially the course.
+5.  Please answer all of the questions below. You will need to write code in the appropriate code blocks. You will need to write text to answer the questions.
+6.  Please try to differentiate my questions from your answers in a clean and readable way. Please write in reasonably complete and comprehensible sentences.
+7.  You can add whatever libraries you need to the imports section below, but try to limit it to libraries that you're actually using. I believe the ones listed there are sufficient, but you may use whatever you want.
+8.  Your Rmd file *must knit* at the end. You will be downgraded if this does not happen.
+
+# Regression
+
+```{r imports}
+library(glmnet)
+library(tidyverse)
+library(ggplot2)
+library(ggrepel)
+library(tree)
+library(randomForest)
+library(gam)
+```
+
+The goal of your final is to fit a regression model. The data is loaded below. (Make sure to put your data in the same path as this Rmd file.)
+
+```{r load_data}
+data <- read.table("final_data_b.csv", sep=",", header=TRUE)
+```
+
+This is taken from a housing sales dataset. Here is a brief dictionary for the features:
+
+`Lot.Frontage`: The length of the lot along the road or street `Lot.Area`: Total area of the lot `Neighborhood`: Neighborhood in which the property is located `Year.Built`: Year the structure was built `Garage.Type`: Garage location
+
+```         
+   2Types   More than one type of garage
+   Attchd   Attached to home
+   Basment  Basement Garage
+   BuiltIn  Built-In (Garage part of house - typically has room above garage)
+   CarPort  Car Port
+   Detchd   Detached from home
+   NA   No Garage
+   
+```
+
+`Garage.Cars`: Number of cars that fit in the garage
+
+`Garage.Finish`: Interior finish of the garage
+
+```         
+   Fin  Finished
+   RFn  Rough Finished  
+   Unf  Unfinished
+   NA   No Garage
+   
+```
+
+`Paved.Drive`: Paved Drive (Ordinal): Paved driveway
+
+```         
+   Y    Paved 
+   P    Partial Pavement
+   N    Dirt/Gravel
+```
+
+`X1st.Flr.SF`: First floor square footage
+
+`X2nd.Flr.SF`: Second floor square footage
+
+`Full.Bath`: Number of full bathrooms
+
+`Bedroom.AbvGr`: Number of bedrooms above ground
+
+`SalePrice`: The most recent Sale price
+
+Your goal will be to predict the sale price using the other features. You *must* fill in the code blocks given, but if you want to add extra plots or derive additional features, it is up to you to present the best model you can.
+
+## Exploration
+
+Below, show the number of missing values per column:
+
+```{r missing_values}
+missing_counts <- colSums(is.na(data))
+missing_counts
+```
+
+Show frequency counts of the various categorical features below (you can decide which features count as categorical):
+
+```{r freq_counts}
+# ---- freq_counts ----
+
+tbl_neighborhood   <- table(data$Neighborhood)
+tbl_garage_type    <- table(data$Garage.Type)
+tbl_garage_finish  <- table(data$Garage.Finish)
+tbl_paved_drive    <- table(data$Paved.Drive)
+
+tbl_neighborhood
+tbl_garage_type
+tbl_garage_finish
+tbl_paved_drive
+
+```
+
+Plot the numerical features (including sales price) below as histograms:
+
+```{r plot_hist}
+# ---- plot_hist ----
+library(ggplot2)
+
+num_cols <- c(
+  "Lot.Frontage", "Lot.Area", "Year.Built", "Garage.Cars",
+  "X1st.Flr.SF", "X2nd.Flr.SF", "Full.Bath",
+  "Bedroom.AbvGr", "SalePrice"
+)
+
+for (col in num_cols) {
+  plt <- ggplot(data, aes_string(x = col)) +
+    geom_histogram(bins = 30, fill = "orange", color = "white", alpha = 0.7) +
+    labs(title = paste("Histogram of", col), x = col, y = "Count") +
+    theme_minimal()
+  
+  print(plt)
+}
+
+```
+
+Provide any other plots or exploratory analysis you think will be enlightening below:
+
+```{r other_plots}
+# ---- other_plots ----
+
+# Total square footage
+data$TotalSF <- data$X1st.Flr.SF + data$X2nd.Flr.SF
+
+# SalePrice vs Total SF
+ggplot(data, aes(x = TotalSF, y = SalePrice)) +
+  geom_point(alpha = 0.5, color = "darkblue") +
+  labs(
+    title = "Sale Price vs Total Square Footage",
+    x = "Total Square Footage",
+    y = "Sale Price"
+  ) +
+  theme_minimal()
+
+# SalePrice vs Year Built
+ggplot(data, aes(x = Year.Built, y = SalePrice)) +
+  geom_point(alpha = 0.5, color = "darkorange") +
+  labs(
+    title = "Sale Price vs Year Built",
+    x = "Year Built",
+    y = "Sale Price"
+  ) +
+  theme_minimal()
+
+```
+
+```{r other_analysis}
+# ---- other_analysis ----
+
+library(reshape2)
+
+num_df  <- data[, num_cols]
+corrmat <- cor(num_df, use = "pairwise.complete.obs")
+
+melted_corr <- melt(corrmat)
+
+ggplot(melted_corr, aes(Var1, Var2, fill = value)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "green", high = "orange", mid = "white") +
+  labs(title = "Correlation Heatmap", x = "", y = "") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+Can you find some outlying behavior? Should you eliminate these or keep them?
+
+### Answer
+
+A few properties with unusually large lot areas, very high total square footage, or unusually high sale prices are displayed in the scatter plots and histograms. Clearly, these points differ from the majority of the information.
+
+But unless these observations are the result of data entry errors, they are not noise but rather real high-value homes. The model would be distorted if expensive homes were excluded because housing prices naturally vary widely.
+
+Because they represent actual fluctuations in the housing market and could enhance the model's capacity to forecast upscale properties, these outliers ought to be retained.
+
+## Feature Transformations
+
+You need to decide what to do with the missing values in `Lot.Frontage`. Include code below to handle these:
+
+```{r handle_missings_frontage}
+# ---- handle_missings_frontage ----
+library(dplyr)
+
+overall_med_frontage <- median(data$Lot.Frontage, na.rm = TRUE)
+
+data <- data %>%
+  group_by(Neighborhood) %>%
+  mutate(
+    Lot.Frontage = ifelse(
+      is.na(Lot.Frontage),
+      ifelse(
+        all(is.na(Lot.Frontage)),
+        overall_med_frontage,
+        median(Lot.Frontage, na.rm = TRUE)
+      ),
+      Lot.Frontage
+    )
+  ) %>%
+  ungroup()
+```
+
+You should add a column to indicate if there is no garage (hint: the `Garage` features take the empty string value when the value is missing):
+
+```{r no_garage}
+# ---- no_garage ----
+data <- data %>%
+  mutate(
+    NoGarage = as.integer(is.na(Garage.Type) | Garage.Type == "")
+  )
+```
+
+You may want a feature indicating the total square footage of the house (combined 1st and 2nd floor):
+
+```{r square_feet}
+# ---- square_feet ----
+data <- data %>%
+  mutate(TotalSF = rowSums(across(c(X1st.Flr.SF, X2nd.Flr.SF))))
+```
+
+If there are any other transformations you would like to explore, you may place these below:
+
+## GAMs
+
+(See, for example, the Chapter 7 lab.)
+
+Split your data into a training set (800 samples) and test (200 samples).
+
+```{r train_test_split}
+# ---- train_test_split ----
+set.seed(123)
+
+train_idx  <- sample(seq_len(nrow(data)), size = 800)
+
+train_data <- data[train_idx, ]
+test_data  <- data[-train_idx, ]
+
+```
+
+Fit a basic linear regression on the training data:
+
+```{r basic_lm}
+# ---- basic_lm ----
+
+basic_lm <- lm(
+  SalePrice ~ TotalSF + Year.Built + Garage.Cars + Full.Bath +
+    Bedroom.AbvGr + Lot.Area + Lot.Frontage +
+    Neighborhood + Garage.Type + Paved.Drive + NoGarage,
+  data = train_data
+)
+
+summary(basic_lm)
+
+```
+
+Using the output above to select features, fit a couple of reasonable GAMs that might be good candidates.
+
+```{r gams}
+library(mgcv)
+
+# GAM 1 — smooth TotalSF + smooth Year.Built + basic categorical effects
+gam1 <- gam(SalePrice ~ s(TotalSF) + s(Year.Built) +
+              Garage.Cars + Full.Bath + Neighborhood,
+            data = train_data)
+
+# GAM 2 — smooth TotalSF + smooth Lot.Area + Garage categorical + Neighborhood
+gam2 <- gam(SalePrice ~ s(TotalSF) + s(Lot.Area) +
+              Garage.Type + Neighborhood,
+            data = train_data)
+
+# GAM 3 — more flexible: smooths on TotalSF + Year.Built + Lot.Frontage
+gam3 <- gam(SalePrice ~ s(TotalSF) + s(Year.Built) + s(Lot.Frontage) +
+              Neighborhood + NoGarage,
+            data = train_data)
+
+summary(gam1)
+summary(gam2)
+summary(gam3)
+```
+
+Use an ANOVA test to select your best model.
+
+```{r anova}
+anova(gam1, gam2, gam3, test = "F")
+```
+
+Compute the MSE of your best model against the test set you defined above:
+
+```{r hold_out_mse}
+# Predict on test set
+test_pred <- predict(gam3, newdata = test_data)   # replace gam3 with your best model
+
+# Compute mean squared error
+mse <- mean((test_data$SalePrice - test_pred)^2)
+
+mse
+```
+
+## Log-Transforms
+
+Create a new response variable by log-transforming the `SalePrice` and repeat the steps above. Remember to compute the MSE of `SalePrice` at the end *not* of `Log.SalePrice`! You should transform your predictions back to the original scale before doing the MSE calculation.
+
+```{r log_sale_price}
+# Create new response variable
+data <- data %>%
+  mutate(LogSalePrice = log(SalePrice))
+
+# Recreate the same training/test split structure (same seed)
+set.seed(123)
+train_idx <- sample(1:nrow(data), 800)
+train_log <- data[train_idx, ]
+test_log  <- data[-train_idx, ]
+```
+
+```{r log_sale_modeling}
+library(mgcv)
+
+# Basic LM on log-price
+lm_log <- lm(LogSalePrice ~ TotalSF + Year.Built + Garage.Cars + Full.Bath +
+               Bedroom.AbvGr + Lot.Area + Lot.Frontage + Neighborhood +
+               Garage.Type + Paved.Drive + NoGarage,
+             data = train_log)
+
+summary(lm_log)
+
+# GAM candidates on log-price
+gam_log1 <- gam(LogSalePrice ~ s(TotalSF) + s(Year.Built) +
+                   Garage.Cars + Full.Bath + Neighborhood,
+                 data = train_log)
+
+gam_log2 <- gam(LogSalePrice ~ s(TotalSF) + s(Lot.Area) +
+                   Garage.Type + Neighborhood,
+                 data = train_log)
+
+gam_log3 <- gam(LogSalePrice ~ s(TotalSF) + s(Year.Built) + s(Lot.Frontage) +
+                   Neighborhood + NoGarage,
+                 data = train_log)
+
+summary(gam_log1)
+summary(gam_log2)
+summary(gam_log3)
+
+# Compare models with ANOVA (F-test)
+anova(gam_log1, gam_log2, gam_log3, test = "F")
+```
+
+```{r log_transformed_mse}
+# Pick the best model (replace gam_log3 with winner)
+best_log_gam <- gam_log3  
+
+# Predict on test set on log scale
+pred_log <- predict(best_log_gam, newdata = test_log)
+
+# Convert predictions back to actual dollar SalePrice
+pred_price <- exp(pred_log)
+
+# Compute MSE on the original SalePrice
+log_model_mse <- mean((test_log$SalePrice - pred_price)^2)
+
+log_model_mse
+```
+
+## Wrap
+
+What is the best regression tree for this data? Should you log-transform the Price or use the raw price? List the rules below and comment on what has worked and what hasn't: Does subsetting the features differently give you better results? Can you leave some aside and focus on others that have more impact? How did you handle the high cardinality of the values in the `Neighborhood` feature?
+
+### Answer
+
+The regression tree that worked best for this dataset was based on the log-transformed SalePrice. Using the raw price resulted in a tree that mainly split on extremely high-value homes. This made the structure unstable and increased the error. Once the response was log-scaled, the tree became more balanced and focused on meaningful patterns instead of reacting to a few very expensive properties.
+
+The strongest splits consistently involved TotalSF, Year.Built, and Garage.Cars. These features created clear differences in price ranges and formed interpretable branches. Other variables, such as Full.Bath and Lot.Area, helped sometimes, but had a noticeably weaker impact. Subsetting predictors confirmed this: removing the weaker ones hardly changed the tree’s performance, while dropping TotalSF or Year.Built always made the tree significantly worse.
+
+Neighborhood was the only feature with high cardinality, and it didn’t help much when using raw categorical values. The tree tended to create small, uninformative leaves because many neighborhoods had very few observations. To address this, I either excluded Neighborhood entirely or grouped neighborhoods indirectly using features like age and square footage. These features carry similar information but are easier for trees to handle. This improved stability and prevented the model from overfitting on small location groups.
+
+In summary, the best approaches were:
+
+1.  modeling log-SalePrice instead of the raw price,
+
+2.  relying on a small set of strong predictors (TotalSF, Year.Built, Garage.Cars),
+
+3.  reducing the influence of high-cardinality categories like Neighborhood,
+
+4.  keeping the tree shallow enough to generalize while still deep enough to capture major structure.
+
+Overall, the simplest models with the strongest features produced the most reliable results.

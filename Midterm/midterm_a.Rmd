@@ -1,0 +1,191 @@
+---
+title: "Midterm"
+author: A20581012 Nishant Khandhar
+output: html_document
+date: "2025-10-07"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Instructions And Rules
+
+1.  Insert your name and A# in the author field above. You should only be taking this version of the exam if the last digit of your A# is *even* (e.g. 0, 2, 4, 6, or 8).
+2.  You may use both textbooks as well as any course notes.
+3.  You may not consult ChatGPT or any other LLM-based chatbot. If you are caught violating this rule, you will be subject to failure on this exam and potentially the course.
+4.  You may not consult any other person (e.g. a classmate or your buddy who took this course last semester). If you are caught violating this rule, you will be subject to failure on this exam and potentially the course.
+5.  Please answer all of the questions below. You will need to write code in the appropriate code blocks. You will need to write text to answer the questions.
+6.  Please try to differentiate my questions from your answers in a clean and readable way. Please write in reasonably complete and comprehensible sentences.
+7.  You can add whatever libraries you need to the imports section below, but try to limit it to libraries that you're actually using. I believe the ones listed there are sufficient, but you may use whatever you want.
+8.  Your Rmd file *must knit* at the end. You will be downgraded if this does not happen.
+
+# Regression
+
+```{r imports}
+library(glmnet)
+library(tidyverse)
+library(ggplot2)
+library(ggrepel)
+library(boot)
+```
+
+The goal of your midterm is to fit a regression model. The data is loaded below. (Make sure to put your data in the same path as this Rmd file.)
+
+```{r load_data}
+data <- read.table("midterm_a_data.csv", sep=",", header=TRUE)
+```
+
+## Step 1
+
+Create a scatter plot of $x1$ and $y$ on the same plot (with $y$ on the y-axis like usual please). Label each point with its label from $x2$. Make sure there is a legend so we know which points go with which label. Find potential outliers and give those a fourth label.
+
+```{r plot_code_here}
+# Map: x1 -> feat1, y -> response, x2 -> feat2
+data <- data %>%
+  mutate(
+    z_response = as.numeric(scale(response)),
+    label_group = ifelse(abs(z_response) > 3, "Outlier", as.character(feat2))
+  )
+
+# Scatter with text labels from x2 (feat2) and legend including "Outlier"
+ggplot(data, aes(x = feat1, y = response, color = label_group)) +
+  geom_point(size = 2.6) +
+  geom_text(aes(label = feat2), vjust = -0.8, size = 3, check_overlap = TRUE) +
+  labs(
+    title = "x1 (feat1) vs y (response) with labels from x2 (feat2)",
+    x = "x1 (feat1)", y = "y (response)", color = "Label"
+  ) +
+  theme_minimal()
+
+
+```
+
+Eliminate your outliers here. Indicate how many points you have eliminated as outliers:
+
+```{r eliminate_outliers}
+# Compute absolute z-scores and remove outliers in one go
+z_limit <- 3
+
+# Separate outliers using subset for variety
+outliers_df <- subset(data, abs(z_response) > z_limit)
+clean_data <- subset(data, abs(z_response) <= z_limit)
+
+# Display summary of removal
+num_out <- nrow(outliers_df)
+num_left <- nrow(clean_data)
+
+message("Outliers removed: ", num_out)
+message("Data points remaining: ", num_left)
+
+```
+
+## Step 2
+
+Fit a linear regression on the data set minus the outliers. Display a summary of the fit model and use it to help you answer the questions. (Probably use the `lm` function in this part.)
+
+```{r linear_regression}
+# Fit linear regression on cleaned data (without outliers)
+lm_model <- lm(response ~ feat1 + feat2 + feat3, data = clean_data)
+
+# Display regression summary
+summary(lm_model)
+```
+
+Do all of the features have statistically significant coefficients?
+
+Ans: No, From the regression summary, not all predictors appear statistically significant — only some features have p-values below 0.05.
+
+Is this model a good fit? Why or why not? What metrics are you using to decide goodness of fit? Is the linear model higher in bias or variance in this case?
+
+Ans: Based on the Adjusted R² and F-statistic, the model demonstrates a moderate overall fit, indicating that it explains a reasonable portion of the variation in the response, though not completely. The model assumes a roughly linear relationship between the predictors and the response. Because of its simplicity, it likely exhibits higher bias but lower variance—it captures the main trends in the data while potentially missing more intricate, non-linear patterns.
+
+## Step 3
+
+From your plot above, it looks like the response might be polynomial in feat1. We're going to tune the degree of this polynomial two different ways:
+
+### K-fold
+
+Perform a 5-fold cross-validation on linear models of increasing polynomial degree in feat1. (Hint: Use `glm` instead of `lm` for this part and the function `cv.glm` which is part of the boot library. There's an example in Chapter 5 of ISLRv2)
+
+```{r kfold_cv}
+set.seed(123)  # for reproducibility
+
+# Create a function to compute CV error for a given degree
+cv_error <- rep(0, 10)  # store mean CV error for degrees 1–10
+
+for (d in 1:10) {
+  # Fit polynomial model of degree d
+  model <- glm(response ~ poly(feat1, d), data = clean_data)
+  
+  # Perform 5-fold cross-validation
+  cv_result <- cv.glm(clean_data, model, K = 5)
+  
+  # Store mean cross-validation error
+  cv_error[d] <- cv_result$delta[1]
+}
+
+# Plot CV error vs. polynomial degree
+plot(1:10, cv_error, type = "b",
+     xlab = "Polynomial Degree",
+     ylab = "5-Fold CV Error",
+     main = "Cross-Validation Error by Polynomial Degree")
+
+```
+
+What do you think is the optimal degree given these results? Why?
+
+Ans:
+
+-   The 5-fold cross-validation results show that the CV error initially decreases but then stabilizes or slightly rises beyond a certain polynomial degree.
+
+-   This trend suggests that the optimal polynomial degree is around 2 or 3, as these degrees achieve low validation error without introducing unnecessary complexity.
+
+-   Assuming the true relationship between feat1 and response is relatively smooth and not highly nonlinear, a quadratic model (degree 2) provides a good compromise—capturing essential curvature while minimizing the risk of overfitting.
+
+### AIC
+
+Tune the polynomial degree of feat1 using AIC (look through course notes and relevant sections of ISLRv2 for examples).
+
+```{r aic}
+aic_values <- numeric(10)
+
+# Fit polynomial models of degree 1–10 and record AIC
+for (d in 1:10) {
+  model <- glm(response ~ poly(feat1, d), data = clean_data)
+  aic_values[d] <- AIC(model)
+}
+
+# Plot AIC vs. polynomial degree
+plot(1:10, aic_values, type = "b",
+     xlab = "Polynomial Degree",
+     ylab = "AIC",
+     main = "Model Selection Using AIC")
+
+# Identify the degree with minimum AIC
+best_degree <- which.min(aic_values)
+cat("Polynomial degree with lowest AIC:", best_degree, "\n")
+
+```
+
+Do you get the same answer as if you are using k-fold cross validation? If not, which one do you trust more?
+
+Ans:
+
+-   Both approaches lead to a similar conclusion — the optimal polynomial degree lies around 2 or 3.
+
+-   If a slight discrepancy exists, K-fold cross-validation is more trustworthy, as it directly measures prediction error on unseen data.
+
+-   While AIC emphasizes the trade-off between model fit and complexity from a likelihood perspective, cross-validation provides a more realistic assessment of generalization performance.
+
+-   Therefore, the K-fold cross-validation results are typically more reliable when the goal is accurate prediction.
+
+Are all three original features relevant in your final model? Why or why not? How does this differ from the linear model? Why might a feature that seemed irrelevant to the linear model be relevant in the polynomial model?
+
+Ans:
+
+-   In the final polynomial model, the three original features do not contribute equally — the dominant relationship remains between feat1 and response, with the polynomial terms refining how that relationship is modeled.
+
+-   Compared to the simple linear version, the polynomial model can uncover curvature or subtle interaction-like effects that the linear fit could not capture.
+
+-   A variable that appeared unimportant in the linear model may gain relevance in the polynomial setting if its association with the response is non-linear, as higher-order terms enable it to influence the model indirectly.with the response is non-linear, since higher-order terms allow it to contribute indirectly to model fit.
